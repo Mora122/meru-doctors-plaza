@@ -53,7 +53,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: http://host.docker.internal:5000
+        VITE_API_URL: http://mdp_backend:5000
     container_name: mdp_frontend
     restart: unless-stopped
     ports:
