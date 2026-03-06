@@ -1,0 +1,64 @@
+services:
+
+  # ── PostgreSQL ────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: mdp_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       meru_doctors_plaza
+      POSTGRES_USER:     mdp_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"   # only accessible locally
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mdp_user -d meru_doctors_plaza"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend API ───────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mdp_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV:     development
+      PORT:         5000
+      DB_HOST:      db
+      DB_PORT:      5432
+      DB_NAME:      meru_doctors_plaza
+      DB_USER:      mdp_user
+      DB_PASSWORD:  ${DB_PASSWORD}
+      JWT_SECRET:   ${JWT_SECRET}
+      JWT_EXPIRES_IN: 7d
+      SMTP_HOST:    ${SMTP_HOST}
+      SMTP_PORT:    ${SMTP_PORT}
+      SMTP_USER:    ${SMTP_USER}
+      SMTP_PASS:    ${SMTP_PASS}
+      FRONTEND_URL: ${FRONTEND_URL}
+    ports:
+      - "127.0.0.1:5000:5000"   # only accessible via Nginx
+
+  # ── Frontend (production build served by Nginx) ───────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://host.docker.internal:5000
+    container_name: mdp_frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"
+
+volumes:
+  postgres_data:
+    driver: local
