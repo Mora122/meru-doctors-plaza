@@ -1,0 +1,103 @@
+name: Deploy Backend to VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/deploy-backend.yml'
+  workflow_dispatch:
+
+jobs:
+  # ── 1. Validate ────────────────────────────────────────────────────
+  validate:
+    name: Validate Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Check syntax
+        working-directory: backend
+        run: node --check src/server.js
+
+  # ── 2. Deploy to VPS via SSH ──────────────────────────────────────
+  deploy:
+    name: Deploy to VPS
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy backend files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key:      ${{ secrets.VPS_SSH_KEY }}
+          port:     ${{ secrets.VPS_PORT || 22 }}
+          source:   "backend/*,docker-compose.yml"
+          target:   "/srv/meru-doctors-plaza"
+
+      - name: SSH — Restart backend with Docker Compose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key:      ${{ secrets.VPS_SSH_KEY }}
+          port:     ${{ secrets.VPS_PORT || 22 }}
+          script: |
+            set -e
+            cd /srv/meru-doctors-plaza
+
+            # Write env file from GitHub secrets
+            cat > .env <<EOF
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            SMTP_HOST=${{ secrets.SMTP_HOST }}
+            SMTP_PORT=587
+            SMTP_USER=${{ secrets.SMTP_USER }}
+            SMTP_PASS=${{ secrets.SMTP_PASS }}
+            FRONTEND_URL=https://merudoctorsplaza.co.ke
+            NODE_ENV=production
+            EOF
+
+            # Pull and restart
+            docker compose pull backend db 2>/dev/null || true
+            docker compose up -d --build backend
+
+            # Run migrations (idempotent)
+            docker compose exec -T backend node src/db/migrate.js
+
+            # Health check
+            sleep 5
+            curl -sf http://localhost:5000/health && echo "✅ Backend healthy" || exit 1
+
+            echo "✅ Backend deployed at $(date)"
+
+  # ── 3. Summary ────────────────────────────────────────────────────
+  notify:
+    needs: [validate, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Summary
+        run: |
+          STATUS="${{ needs.deploy.result }}"
+          if [ "$STATUS" == "success" ]; then
+            echo "## ✅ Backend Deployed" >> $GITHUB_STEP_SUMMARY
+            echo "API running at: https://merudoctorsplaza.co.ke/health" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## ❌ Backend Deploy Failed (status: $STATUS)" >> $GITHUB_STEP_SUMMARY
+          fi
